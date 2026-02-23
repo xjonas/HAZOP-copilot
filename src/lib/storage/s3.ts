@@ -12,17 +12,31 @@ function getEnv(name: string): string {
 }
 
 function getRegion(): string {
-    return process.env.AWS_REGION || process.env.AWS_DEFAULT_REGION || getEnv('AWS_REGION')
+    return getEnv('env_AWS_REGION')
 }
 
-const s3Client = new S3Client({ region: getRegion() })
+function getCredentials(): { accessKeyId: string; secretAccessKey: string } | undefined {
+    const accessKeyId = process.env.env_AWS_ACCESS_KEY_ID
+    const secretAccessKey = process.env.env_AWS_SECRET_ACCESS_KEY
+
+    if (!accessKeyId || !secretAccessKey) {
+        return undefined
+    }
+
+    return { accessKeyId, secretAccessKey }
+}
+
+const s3Client = new S3Client({
+    region: getRegion(),
+    credentials: getCredentials(),
+})
 
 export function getBucketName(bucketType: StorageBucketType): string {
     if (bucketType === 'pid') {
-        return getEnv('AWS_S3_PID_BUCKET')
+        return getEnv('env_AWS_S3_PID_BUCKET')
     }
 
-    return process.env.AWS_S3_MEETING_BUCKET || getEnv('AWS_S3_PID_BUCKET')
+    return process.env.env_AWS_S3_MEETING_BUCKET || getEnv('env_AWS_S3_PID_BUCKET')
 }
 
 export async function uploadObject(params: {
