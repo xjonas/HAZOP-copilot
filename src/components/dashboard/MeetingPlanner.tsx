@@ -3,9 +3,9 @@
 import React, { useState, useEffect } from 'react';
 import Link from 'next/link';
 import { Video, Clock, User, Users } from 'lucide-react';
-import type { Project, Meeting, TeamMember } from '@/types';
+import type { Project, Meeting } from '@/types';
 import { useMeetings } from '@/hooks/useMeetings';
-import { useTeam } from '@/hooks/useTeam';
+import { useOrgMembers } from '@/hooks/useOrgMembers';
 
 interface MeetingPlannerProps {
     projects: Project[];
@@ -13,12 +13,11 @@ interface MeetingPlannerProps {
 
 export function MeetingPlanner({ projects }: MeetingPlannerProps) {
     const { getAllMeetings, addMeeting } = useMeetings();
-    const { getTeamMembers } = useTeam();
+    const { orgMembers } = useOrgMembers();
 
     // Extracted state for component
     const [meetings, setMeetings] = useState<Meeting[]>([]);
     const [selectedProjectId, setSelectedProjectId] = useState<string>('');
-    const [projectMembers, setProjectMembers] = useState<TeamMember[]>([]);
     const [meetingTitle, setMeetingTitle] = useState('');
     const [meetingDate, setMeetingDate] = useState('');
     const [meetingNotes, setMeetingNotes] = useState('');
@@ -35,13 +34,8 @@ export function MeetingPlanner({ projects }: MeetingPlannerProps) {
     }, [getAllMeetings]);
 
     useEffect(() => {
-        if (selectedProjectId) {
-            getTeamMembers(selectedProjectId).then(setProjectMembers).catch(console.error);
-        } else {
-            setProjectMembers([]);
-        }
         setMeetingAttendees([]);
-    }, [selectedProjectId, getTeamMembers]);
+    }, [selectedProjectId]);
 
     const activeProjects = projects.filter(p => p.status === 'active' || p.status === 'planning').slice(0, 5);
 
@@ -99,21 +93,21 @@ export function MeetingPlanner({ projects }: MeetingPlannerProps) {
                             <input required type="datetime-local" className="input w-full " value={meetingDate} onChange={e => setMeetingDate(e.target.value)} />
                         </div>
                     </div>
-                    {projectMembers.length > 0 && (
+                    {orgMembers.length > 0 && (
                         <div>
                             <label className="block text-xs font-semibold text-slate-600 mb-2">Attendees</label>
                             <div className="flex flex-wrap gap-2">
-                                {projectMembers.map(m => (
+                                {orgMembers.map(m => (
                                     <button
                                         key={m.id}
                                         type="button"
-                                        onClick={() => setMeetingAttendees(prev => prev.includes(m.name) ? prev.filter(a => a !== m.name) : [...prev, m.name])}
-                                        className={`text-xs px-3 py-1.5 rounded-full border transition-colors ${meetingAttendees.includes(m.name)
+                                        onClick={() => setMeetingAttendees(prev => prev.includes(m.full_name) ? prev.filter(a => a !== m.full_name) : [...prev, m.full_name])}
+                                        className={`text-xs px-3 py-1.5 rounded-full border transition-colors ${meetingAttendees.includes(m.full_name)
                                             ? 'bg-primary-50 border-primary-200 text-primary-700'
                                             : 'border-slate-200 text-slate-600 hover:border-slate-300'
                                             }`}
                                     >
-                                        {m.name}
+                                        {m.full_name}
                                     </button>
                                 ))}
                             </div>

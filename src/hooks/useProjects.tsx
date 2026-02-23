@@ -1,37 +1,38 @@
 'use client';
 
-import React, { useState, useEffect, useContext, createContext, useCallback, ReactNode } from 'react';
-import { createClient } from '@/lib/supabase/client';
-import { toCamel, mapRows, toSnake } from '@/lib/supabase/mappers';
-import { buildSafeStoragePath, validateUploadFile } from '@/lib/supabase/upload-security';
+import React, { useState, useEffect, useContext, createContext, useCallback, ReactNode, useRef } from 'react';
+import { validateUploadFile } from '@/lib/supabase/upload-security';
 import { useAuth } from '@/hooks/useAuth';
-import { getPrimaryOrgIdForUser } from '@/lib/supabase/org-membership';
 import type { Project, ProjectFile, Task, HazopRow } from '@/types';
 
-/* ── helpers ─────────────────────────────────────────────── */
-const supabase = createClient();
 const ALLOWED_PROJECT_FILE_MIME_TYPES = ['application/pdf', 'image/png', 'image/jpeg', 'image/webp'];
 const MAX_PROJECT_FILE_BYTES = 50 * 1024 * 1024;
 
-/* ── Context type ────────────────────────────────────────── */
+async function parseApiError(response: Response, fallback: string): Promise<Error> {
+    try {
+        const payload = await response.json();
+        if (payload?.error && typeof payload.error === 'string') {
+            return new Error(payload.error);
+        }
+    } catch {
+        // ignore
+    }
+    return new Error(fallback);
+}
+
 interface ProjectsContextType {
     projects: Project[];
     loading: boolean;
-    // Project CRUD
     addProject: (project: Partial<Project>) => Promise<Project>;
     getProject: (id: string) => Project | undefined;
     updateProject: (id: string, updates: Partial<Project>) => Promise<void>;
     deleteProject: (id: string) => Promise<void>;
-    // Files
     uploadFile: (projectId: string, file: File) => Promise<ProjectFile>;
     getFiles: (projectId: string) => Promise<ProjectFile[]>;
     getSignedUrl: (storagePath: string, bucket?: string) => Promise<string>;
-    // Tasks
-    // Tasks
-    getTasks: (projectId: string, taskType?: 'object' | 'node') => Promise<Task[]>;
+    getTasks: (projectId: string, taskType?: 'object' | 'node', forceRefresh?: boolean) => Promise<Task[]>;
     upsertTasks: (tasks: Partial<Task>[]) => Promise<Task[]>;
     updateTask: (taskId: string, updates: Partial<Task>) => Promise<void>;
-    // HAZOP rows
     getHazopRows: (nodeTaskId: string) => Promise<HazopRow[]>;
     upsertHazopRows: (rows: Partial<HazopRow>[]) => Promise<HazopRow[]>;
     deleteHazopRow: (rowId: string) => Promise<void>;
@@ -39,24 +40,52 @@ interface ProjectsContextType {
 
 const ProjectsContext = createContext<ProjectsContextType | null>(null);
 
-/* ── Provider ────────────────────────────────────────────── */
 export function ProjectsProvider({ children }: { children: ReactNode }) {
     const { user } = useAuth();
     const [projects, setProjects] = useState<Project[]>([]);
     const [loading, setLoading] = useState(true);
+    const [allFiles, setAllFiles] = useState<ProjectFile[] | null>(null);
+    const [signedUrls, setSignedUrls] = useState<Record<string, { url: string; expiresAt: number }>>({});
+    const [allTasks, setAllTasks] = useState<Task[] | null>(null);
+    const [allHazopRows, setAllHazopRows] = useState<HazopRow[] | null>(null);
 
-    /* Fetch all projects for the user's org */
+    const lastUserSubRef = useRef<string | null>(null);
+    const loadedFileProjectIdsRef = useRef<Set<string>>(new Set());
+    const loadedTaskProjectIdsRef = useRef<Set<string>>(new Set());
+    const loadedHazopNodeIdsRef = useRef<Set<string>>(new Set());
+
+    useEffect(() => {
+        const currentSub = user?.sub ?? null;
+        if (lastUserSubRef.current === currentSub) {
+            return;
+        }
+
+        lastUserSubRef.current = currentSub;
+        loadedFileProjectIdsRef.current.clear();
+        loadedTaskProjectIdsRef.current.clear();
+        loadedHazopNodeIdsRef.current.clear();
+        setProjects([]);
+        setAllFiles(null);
+        setSignedUrls({});
+        setAllTasks(null);
+        setAllHazopRows(null);
+        setLoading(true);
+    }, [user?.sub]);
+
     const fetchProjects = useCallback(async () => {
-        if (!user) { setProjects([]); setLoading(false); return; }
+        if (!user) {
+            setProjects([]);
+            setLoading(false);
+            return;
+        }
+
         try {
-            const orgId = await getPrimaryOrgIdForUser(supabase, user.id);
-            const { data, error } = await supabase
-                .from('projects')
-                .select('*')
-                .eq('org_id', orgId)
-                .order('created_at', { ascending: false });
-            if (error) throw error;
-            setProjects(mapRows<Project>(data || []));
+            const response = await fetch('/api/projects', { cache: 'no-store' });
+            if (!response.ok) {
+                throw await parseApiError(response, 'Failed to fetch projects');
+            }
+            const data = await response.json();
+            setProjects(data.projects || []);
         } catch (err) {
             console.error('fetchProjects error:', err);
             setProjects([]);
@@ -65,208 +94,320 @@ export function ProjectsProvider({ children }: { children: ReactNode }) {
         }
     }, [user]);
 
-    useEffect(() => { fetchProjects(); }, [fetchProjects]);
+    useEffect(() => {
+        fetchProjects();
+    }, [fetchProjects]);
 
-    /* ── Project CRUD ────────────────────────────────────── */
     const addProject = useCallback(async (project: Partial<Project>): Promise<Project> => {
         if (!user) throw new Error('Not authenticated');
-        const orgId = await getPrimaryOrgIdForUser(supabase, user.id);
-        const row = toSnake({ ...project, orgId, createdBy: user.id });
-        // Remove undefined values
-        Object.keys(row).forEach(k => row[k] === undefined && delete row[k]);
-        const { data, error } = await supabase.from('projects').insert(row).select().single();
-        if (error) throw error;
-        const created = toCamel<Project>(data);
+
+        const response = await fetch('/api/projects', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(project),
+        });
+
+        if (!response.ok) {
+            throw await parseApiError(response, 'Failed to create project');
+        }
+
+        const data = await response.json();
+        const created = data.project as Project;
         setProjects(prev => [created, ...prev]);
         return created;
     }, [user]);
 
-    const getProject = useCallback((id: string) => projects.find(p => p.id === id), [projects]);
+    const getProject = useCallback((id: string) => projects.find((project) => project.id === id), [projects]);
 
     const updateProject = useCallback(async (id: string, updates: Partial<Project>): Promise<void> => {
-        const row = toSnake(updates as Record<string, unknown>);
-        Object.keys(row).forEach(k => row[k] === undefined && delete row[k]);
-        const { error } = await supabase.from('projects').update(row).eq('id', id);
-        if (error) throw error;
-        setProjects(prev => prev.map(p => p.id === id ? { ...p, ...updates } : p));
+        const response = await fetch(`/api/projects/${id}`, {
+            method: 'PATCH',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(updates),
+        });
+
+        if (!response.ok) {
+            throw await parseApiError(response, 'Failed to update project');
+        }
+
+        setProjects(prev => prev.map((project) => project.id === id ? { ...project, ...updates } : project));
     }, []);
 
     const deleteProject = useCallback(async (id: string): Promise<void> => {
-        const { error } = await supabase.from('projects').delete().eq('id', id);
-        if (error) throw error;
-        setProjects(prev => prev.filter(p => p.id !== id));
+        const response = await fetch(`/api/projects/${id}`, { method: 'DELETE' });
+        if (!response.ok) {
+            throw await parseApiError(response, 'Failed to delete project');
+        }
+
+        setProjects(prev => prev.filter((project) => project.id !== id));
     }, []);
 
-    /* ── Files ────────────────────────────────────────────── */
-    const [allFiles, setAllFiles] = useState<ProjectFile[] | null>(null);
-
     const uploadFile = useCallback(async (projectId: string, file: File): Promise<ProjectFile> => {
+        if (!user) throw new Error('Not authenticated');
+
         validateUploadFile(file, {
             allowedMimeTypes: ALLOWED_PROJECT_FILE_MIME_TYPES,
             maxBytes: MAX_PROJECT_FILE_BYTES,
         });
 
-        const storagePath = buildSafeStoragePath(projectId, file.name);
-        const { error: uploadError } = await supabase.storage.from('pid-files').upload(storagePath, file);
-        if (uploadError) throw uploadError;
-        const row = {
-            project_id: projectId,
-            file_name: file.name,
-            storage_path: storagePath,
-            mime_type: file.type || 'application/pdf',
-            size_bytes: file.size,
-            uploaded_by: user?.id,
-        };
-        const { data, error } = await supabase.from('project_files').insert(row).select().single();
-        if (error) throw error;
-        const created = toCamel<ProjectFile>(data);
-        if (allFiles !== null) {
-            setAllFiles(prev => prev ? [...prev, created] : [created]);
+        const formData = new FormData();
+        formData.append('projectId', projectId);
+        formData.append('bucketType', 'pid');
+        formData.append('file', file);
+
+        const uploadResponse = await fetch('/api/storage/upload', {
+            method: 'POST',
+            body: formData,
+        });
+
+        if (!uploadResponse.ok) {
+            throw await parseApiError(uploadResponse, 'Failed to upload file');
         }
+
+        const uploadResult = await uploadResponse.json();
+        const storagePath = uploadResult.storagePath as string;
+
+        const metadataResponse = await fetch(`/api/projects/${projectId}/files`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+                fileName: file.name,
+                storagePath,
+                mimeType: file.type || 'application/pdf',
+                sizeBytes: file.size,
+            }),
+        });
+
+        if (!metadataResponse.ok) {
+            throw await parseApiError(metadataResponse, 'Failed to save file metadata');
+        }
+
+        const data = await metadataResponse.json();
+        const created = data.file as ProjectFile;
+
+        loadedFileProjectIdsRef.current.add(projectId);
+        setAllFiles(prev => prev ? [...prev, created] : [created]);
+
         return created;
-    }, [user, allFiles]);
+    }, [allFiles, user]);
 
     const getFiles = useCallback(async (projectId: string): Promise<ProjectFile[]> => {
-        if (allFiles !== null) return allFiles.filter(f => f.projectId === projectId);
+        const hasLoadedProjectFiles = loadedFileProjectIdsRef.current.has(projectId);
+        if (allFiles !== null && hasLoadedProjectFiles) {
+            return allFiles.filter((file) => file.projectId === projectId);
+        }
 
-        const { data, error } = await supabase.from('project_files').select('*').eq('project_id', projectId).order('created_at');
-        if (error) throw error;
-        const fetched = mapRows<ProjectFile>(data || []);
+        const response = await fetch(`/api/projects/${projectId}/files`, { cache: 'no-store' });
+        if (!response.ok) {
+            throw await parseApiError(response, 'Failed to fetch files');
+        }
+
+        const data = await response.json();
+        const fetched = (data.files || []) as ProjectFile[];
+        loadedFileProjectIdsRef.current.add(projectId);
         setAllFiles(prev => prev ? [...prev, ...fetched] : fetched);
         return fetched;
     }, [allFiles]);
 
-    const [signedUrls, setSignedUrls] = useState<Record<string, { url: string, expiresAt: number }>>({});
-
     const getSignedUrl = useCallback(async (storagePath: string, bucket: string = 'pid-files'): Promise<string> => {
         const now = Date.now();
-        const cached = signedUrls[storagePath];
+        const cacheKey = `${bucket}:${storagePath}`;
+        const cached = signedUrls[cacheKey];
         if (cached && cached.expiresAt > now + 300000) {
             return cached.url;
         }
 
-        const expiresIn = 3600;
-        const { data, error } = await supabase.storage.from(bucket).createSignedUrl(storagePath, expiresIn);
-        if (error) throw error;
+        const projectId = storagePath.split('/')[0];
+        if (!projectId) {
+            throw new Error('Invalid storage path');
+        }
+
+        const bucketType = bucket === 'meeting-recordings' ? 'meeting' : 'pid';
+        const query = new URLSearchParams({
+            projectId,
+            storagePath,
+            bucketType,
+        });
+
+        const response = await fetch(`/api/storage/signed-url?${query.toString()}`);
+        if (!response.ok) {
+            throw await parseApiError(response, 'Failed to create signed URL');
+        }
+
+        const data = await response.json();
+        const signedUrl = data.signedUrl as string;
 
         setSignedUrls(prev => ({
             ...prev,
-            [storagePath]: {
-                url: data.signedUrl,
-                expiresAt: now + (expiresIn * 1000)
-            }
+            [cacheKey]: {
+                url: signedUrl,
+                expiresAt: now + 3600 * 1000,
+            },
         }));
 
-        return data.signedUrl;
+        return signedUrl;
     }, [signedUrls]);
 
-    /* ── Tasks ────────────────────────────────────────────── */
-    const [allTasks, setAllTasks] = useState<Task[] | null>(null);
-
-    const getTasks = useCallback(async (projectId: string, taskType?: 'object' | 'node'): Promise<Task[]> => {
-        if (allTasks !== null) {
-            const projectTasks = allTasks.filter(t => t.projectId === projectId);
-            if (taskType) return projectTasks.filter(t => t.taskType === taskType).sort((a, b) => (a.displayOrder || 0) - (b.displayOrder || 0));
+    const getTasks = useCallback(async (projectId: string, taskType?: 'object' | 'node', forceRefresh: boolean = false): Promise<Task[]> => {
+        const hasLoadedProjectTasks = loadedTaskProjectIdsRef.current.has(projectId);
+        if (allTasks !== null && !forceRefresh && hasLoadedProjectTasks) {
+            const projectTasks = allTasks.filter((task) => task.projectId === projectId);
+            if (taskType) {
+                return projectTasks
+                    .filter((task) => task.taskType === taskType)
+                    .sort((a, b) => (a.displayOrder || 0) - (b.displayOrder || 0));
+            }
             return projectTasks.sort((a, b) => (a.displayOrder || 0) - (b.displayOrder || 0));
         }
 
-        let query = supabase.from('tasks').select('*').eq('project_id', projectId).order('display_order');
-        if (taskType) query = query.eq('task_type', taskType);
-        const { data, error } = await query;
-        if (error) throw error;
-        const fetched = mapRows<Task>(data || []);
+        const query = taskType ? `?taskType=${taskType}` : '';
+        const response = await fetch(`/api/projects/${projectId}/tasks${query}`, { cache: 'no-store' });
+        if (!response.ok) {
+            throw await parseApiError(response, 'Failed to fetch tasks');
+        }
 
-        // Only safely update cache if we fetched ALL tasks for the project (not just a specific type), 
-        // otherwise we might pollute the cache assuming it's fully loaded when it isn't.
+        const data = await response.json();
+        const fetched = (data.tasks || []) as Task[];
+
         if (!taskType) {
-            setAllTasks(prev => prev ? [...prev.filter(t => t.projectId !== projectId), ...fetched] : fetched);
+            loadedTaskProjectIdsRef.current.add(projectId);
+            setAllTasks(prev => prev ? [...prev.filter((task) => task.projectId !== projectId), ...fetched] : fetched);
         }
 
         return fetched;
     }, [allTasks]);
 
-    const upsertTasks = useCallback(async (tasks: Partial<Task>[]): Promise<Task[]> => {
-        const rows = tasks.map(t => {
-            const row = toSnake(t as Record<string, unknown>);
-            Object.keys(row).forEach(k => row[k] === undefined && delete row[k]);
-            return row;
+    const upsertTasks = useCallback(async (taskItems: Partial<Task>[]): Promise<Task[]> => {
+        if (!taskItems.length) {
+            return [];
+        }
+
+        const projectId = taskItems[0]?.projectId;
+        if (!projectId) {
+            throw new Error('Task projectId is required for upsert');
+        }
+
+        const response = await fetch(`/api/projects/${projectId}/tasks`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ tasks: taskItems }),
         });
-        const { data, error } = await supabase.from('tasks').upsert(rows).select();
-        if (error) throw error;
-        const upserted = mapRows<Task>(data || []);
+
+        if (!response.ok) {
+            throw await parseApiError(response, 'Failed to upsert tasks');
+        }
+
+        const data = await response.json();
+        const upserted = (data.tasks || []) as Task[];
 
         if (allTasks !== null) {
             setAllTasks(prev => {
                 if (!prev) return upserted;
-                const upsertedIds = new Set(upserted.map(u => u.id));
-                const nonUpdated = prev.filter(t => !upsertedIds.has(t.id));
+                const upsertedIds = new Set(upserted.map((task) => task.id));
+                const nonUpdated = prev.filter((task) => !upsertedIds.has(task.id));
                 return [...nonUpdated, ...upserted];
             });
         }
+
+        loadedTaskProjectIdsRef.current.add(projectId);
+
         return upserted;
     }, [allTasks]);
 
     const updateTask = useCallback(async (taskId: string, updates: Partial<Task>): Promise<void> => {
-        const row = toSnake(updates as Record<string, unknown>);
-        Object.keys(row).forEach(k => row[k] === undefined && delete row[k]);
-        const { error } = await supabase.from('tasks').update(row).eq('id', taskId);
-        if (error) throw error;
+        const response = await fetch(`/api/tasks/${taskId}`, {
+            method: 'PATCH',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(updates),
+        });
+
+        if (!response.ok) {
+            throw await parseApiError(response, 'Failed to update task');
+        }
+
         if (allTasks !== null) {
-            setAllTasks(prev => prev ? prev.map(t => t.id === taskId ? { ...t, ...updates } : t) : null);
+            setAllTasks(prev => prev ? prev.map((task) => task.id === taskId ? { ...task, ...updates } : task) : null);
         }
     }, [allTasks]);
 
-    /* ── HAZOP Rows ──────────────────────────────────────── */
-    const [allHazopRows, setAllHazopRows] = useState<HazopRow[] | null>(null);
-
     const getHazopRows = useCallback(async (nodeTaskId: string): Promise<HazopRow[]> => {
-        if (allHazopRows !== null) {
-            return allHazopRows.filter(r => r.nodeTaskId === nodeTaskId).sort((a, b) => (a.displayOrder || 0) - (b.displayOrder || 0));
+        const hasLoadedRows = loadedHazopNodeIdsRef.current.has(nodeTaskId);
+        if (allHazopRows !== null && hasLoadedRows) {
+            return allHazopRows
+                .filter((row) => row.nodeTaskId === nodeTaskId)
+                .sort((a, b) => (a.displayOrder || 0) - (b.displayOrder || 0));
         }
 
-        const { data, error } = await supabase.from('hazop_rows').select('*').eq('node_task_id', nodeTaskId).order('display_order');
-        if (error) throw error;
-        const fetched = mapRows<HazopRow>(data || []);
-        setAllHazopRows(prev => prev ? [...prev.filter(r => r.nodeTaskId !== nodeTaskId), ...fetched] : fetched);
+        const response = await fetch(`/api/hazop-rows?nodeTaskId=${encodeURIComponent(nodeTaskId)}`, { cache: 'no-store' });
+        if (!response.ok) {
+            throw await parseApiError(response, 'Failed to fetch HAZOP rows');
+        }
+
+        const data = await response.json();
+        const fetched = (data.rows || []) as HazopRow[];
+        loadedHazopNodeIdsRef.current.add(nodeTaskId);
+        setAllHazopRows(prev => prev ? [...prev.filter((row) => row.nodeTaskId !== nodeTaskId), ...fetched] : fetched);
         return fetched;
     }, [allHazopRows]);
 
     const upsertHazopRows = useCallback(async (rows: Partial<HazopRow>[]): Promise<HazopRow[]> => {
-        const dbRows = rows.map(r => {
-            const row = toSnake(r as Record<string, unknown>);
-            Object.keys(row).forEach(k => row[k] === undefined && delete row[k]);
-            return row;
+        const response = await fetch('/api/hazop-rows', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ rows }),
         });
-        const { data, error } = await supabase.from('hazop_rows').upsert(dbRows).select();
-        if (error) throw error;
-        const upserted = mapRows<HazopRow>(data || []);
+
+        if (!response.ok) {
+            throw await parseApiError(response, 'Failed to upsert HAZOP rows');
+        }
+
+        const data = await response.json();
+        const upserted = (data.rows || []) as HazopRow[];
+
+        for (const row of upserted) {
+            loadedHazopNodeIdsRef.current.add(row.nodeTaskId);
+        }
 
         if (allHazopRows !== null) {
             setAllHazopRows(prev => {
                 if (!prev) return upserted;
-                const upsertedIds = new Set(upserted.map(u => u.id));
-                const nonUpdated = prev.filter(r => !upsertedIds.has(r.id));
+                const upsertedIds = new Set(upserted.map((row) => row.id));
+                const nonUpdated = prev.filter((row) => !upsertedIds.has(row.id));
                 return [...nonUpdated, ...upserted];
             });
         }
+
         return upserted;
     }, [allHazopRows]);
 
     const deleteHazopRow = useCallback(async (rowId: string): Promise<void> => {
-        const { error } = await supabase.from('hazop_rows').delete().eq('id', rowId);
-        if (error) throw error;
+        const response = await fetch(`/api/hazop-rows/${rowId}`, { method: 'DELETE' });
+        if (!response.ok) {
+            throw await parseApiError(response, 'Failed to delete HAZOP row');
+        }
+
         if (allHazopRows !== null) {
-            setAllHazopRows(prev => prev ? prev.filter(r => r.id !== rowId) : null);
+            setAllHazopRows(prev => prev ? prev.filter((row) => row.id !== rowId) : null);
         }
     }, [allHazopRows]);
 
     return (
         <ProjectsContext.Provider value={{
-            projects, loading,
-            addProject, getProject, updateProject, deleteProject,
-            uploadFile, getFiles, getSignedUrl,
-            getTasks, upsertTasks, updateTask,
-            getHazopRows, upsertHazopRows, deleteHazopRow,
+            projects,
+            loading,
+            addProject,
+            getProject,
+            updateProject,
+            deleteProject,
+            uploadFile,
+            getFiles,
+            getSignedUrl,
+            getTasks,
+            upsertTasks,
+            updateTask,
+            getHazopRows,
+            upsertHazopRows,
+            deleteHazopRow,
         }}>
             {children}
         </ProjectsContext.Provider>

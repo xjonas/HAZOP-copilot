@@ -11,7 +11,6 @@ import {
     X,
 } from 'lucide-react';
 import { useProjects } from '@/hooks/useProjects';
-import { useTeam } from '@/hooks/useTeam';
 import { useOrgMembers } from '@/hooks/useOrgMembers';
 
 
@@ -25,9 +24,9 @@ const steps = [
 export default function NewProjectPage() {
     const router = useRouter();
     const { addProject, uploadFile } = useProjects();
-    const { addTeamMember } = useTeam();
     const [currentStep, setCurrentStep] = useState(1);
     const [isCreating, setIsCreating] = useState(false);
+    const [createError, setCreateError] = useState<string | null>(null);
     const fileInputRef = useRef<HTMLInputElement>(null);
     const [formData, setFormData] = useState({
         name: '',
@@ -96,6 +95,7 @@ export default function NewProjectPage() {
         if (!validateStep(currentStep)) return;
 
         setIsCreating(true);
+        setCreateError(null);
         try {
             const created = await addProject({
                 name: formData.name,
@@ -111,14 +111,27 @@ export default function NewProjectPage() {
                 await uploadFile(created.id, file);
             }
 
-            // Add responsible person as team lead
-            if (formData.responsiblePerson) {
-                await addTeamMember(created.id, formData.responsiblePerson, 'Team Lead');
-            }
-
             router.push(`/projects/${created.id}/dashboard`);
         } catch (err) {
-            console.error('Error creating project:', err);
+            const message = err instanceof Error
+                ? err.message
+                : (typeof err === 'string'
+                    ? err
+                    : (typeof (err as { message?: unknown } | null)?.message === 'string'
+                        ? (err as { message: string }).message
+                        : 'Failed to create project. Please try again.'));
+            console.error('Error creating project:', {
+                error: err,
+                message,
+                serialized: (() => {
+                    try {
+                        return JSON.stringify(err);
+                    } catch {
+                        return '[unserializable]';
+                    }
+                })(),
+            });
+            setCreateError(message);
             setIsCreating(false);
         }
     };
@@ -152,6 +165,18 @@ export default function NewProjectPage() {
 
             {/* Step Content */}
             <div className="card p-8 space-y-6">
+                {createError && (
+                    <div
+                        className="text-sm p-3 rounded-lg"
+                        style={{
+                            backgroundColor: '#fef2f2',
+                            color: 'var(--color-danger-600)',
+                            border: '1px solid #fecaca',
+                        }}
+                    >
+                        {createError}
+                    </div>
+                )}
                 {currentStep === 1 && (
                     <>
                         <h2 className="text-xl font-bold" style={{ color: 'var(--color-slate-900)' }}>Project Details</h2>

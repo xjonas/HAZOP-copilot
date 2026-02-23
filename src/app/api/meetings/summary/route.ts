@@ -1,7 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { withLangfuseFetch, langfuse } from '@/lib/ai/langfuse';
 import { requireProjectAccess } from '@/lib/api/access-control';
-import { createAdminClient } from '@/lib/supabase/server';
 import { enforceRateLimit, internalServerErrorResponse } from '@/lib/api/security';
 import { z } from 'zod';
 
@@ -14,9 +13,6 @@ const summarySchema = z.object({
 });
 
 export async function POST(req: NextRequest) {
-    let aiRun: any = null;
-    const startTime = Date.now();
-
     try {
         const body = await req.json();
         const parsed = summarySchema.safeParse(body);
@@ -26,7 +22,7 @@ export async function POST(req: NextRequest) {
         }
 
         const { transcript, notes, projectId } = parsed.data;
-        const access = await requireProjectAccess(req.headers, projectId);
+        const access = await requireProjectAccess(req, projectId);
         if ('error' in access) {
             return access.error;
         }
@@ -36,7 +32,7 @@ export async function POST(req: NextRequest) {
             return NextResponse.json({ error: 'Dedalus API key not configured' }, { status: 500 });
         }
 
-        const { supabase, userId } = access;
+        const { userId } = access;
         const limit = enforceRateLimit(`ai:meeting-summary:${userId}`, {
             windowMs: 60_000,
             maxRequests: 10,
@@ -65,28 +61,6 @@ ${transcript || 'N/A'}
 Notes:
 ${notes || 'N/A'}
 `;
-
-        // Create AI run record
-        const { data: newAiRun, error: runError } = await supabase
-            .from('ai_runs')
-            .insert({
-                project_id: projectId,
-                triggered_by: userId,
-                run_type: 'meeting_summary', // Ensure this value is allowed in constraints or 'other'
-                status: 'running',
-                model: 'openai/gpt-4o',
-                provider: 'dedalus',
-                input_context: { type: 'meeting_summary' },
-                prompt_messages: [{ role: 'user', content: prompt }]
-            })
-            .select()
-            .single();
-
-        if (runError) {
-            console.error('Failed to create ai_run:', runError);
-        } else {
-            aiRun = newAiRun;
-        }
 
         console.log('Sending request to Dedalus API...');
 
@@ -130,48 +104,15 @@ ${notes || 'N/A'}
                 }
             });
         } catch (fetchError: any) {
-            if (aiRun) {
-                await supabase.from('ai_runs').update({
-                    status: 'failed',
-                    error_message: `Fetch error: ${fetchError.message}`,
-                    completed_at: new Date().toISOString(),
-                    latency_ms: Date.now() - startTime
-                }).eq('id', aiRun.id);
-            }
             return NextResponse.json({ error: 'Failed to generate meeting summary' }, { status: 500 });
         }
 
         const summary = data.choices?.[0]?.message?.content || 'No summary generated.';
 
-        // Update run as completed
-        if (aiRun) {
-            await supabase.from('ai_runs').update({
-                status: 'completed',
-                output_summary: summary.substring(0, 500) + (summary.length > 500 ? '...' : ''),
-                raw_response: data,
-                prompt_tokens: data.usage?.prompt_tokens,
-                completion_tokens: data.usage?.completion_tokens,
-                total_tokens: data.usage?.total_tokens,
-                completed_at: new Date().toISOString(),
-                latency_ms: Date.now() - startTime
-            }).eq('id', aiRun.id);
-        }
-
         return NextResponse.json({ summary });
 
     } catch (error: any) {
         console.error('Summary generation error:', error);
-
-        // Update aiRun as failed if it was created
-        if (aiRun) {
-            const supabase = createAdminClient();
-            await supabase.from('ai_runs').update({
-                status: 'failed',
-                error_message: error.message || 'Unknown internal server error',
-                completed_at: new Date().toISOString(),
-                latency_ms: Date.now() - startTime
-            }).eq('id', aiRun.id);
-        }
 
         return internalServerErrorResponse();
     } finally {

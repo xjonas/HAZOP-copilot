@@ -11,13 +11,11 @@ import {
     AlertTriangle,
     CheckCircle2,
     Clock,
-    Users,
     ArrowRight,
     Download,
 } from 'lucide-react';
 import { useProjects } from '@/hooks/useProjects';
-import { useTeam } from '@/hooks/useTeam';
-import type { Task, TeamMember, HazopRow } from '@/types';
+import type { Task, HazopRow } from '@/types';
 
 const statusColors: Record<string, string> = {
     planning: 'bg-blue-100 text-blue-700',
@@ -30,11 +28,9 @@ const statusColors: Record<string, string> = {
 export default function ProjectDashboardPage({ params }: { params: Promise<{ id: string }> }) {
     const { id } = use(params);
     const { getProject, getTasks, updateProject, getHazopRows, loading } = useProjects();
-    const { getTeamMembers } = useTeam();
     const project = getProject(id);
 
     const [tasks, setTasks] = useState<Task[]>([]);
-    const [teamMembers, setTeamMembers] = useState<TeamMember[]>([]);
     const [approvedNodes, setApprovedNodes] = useState<Task[]>([]);
     const [nodeHazopRows, setNodeHazopRows] = useState<Record<string, HazopRow[]>>({});
     const [finishing, setFinishing] = useState(false);
@@ -44,12 +40,8 @@ export default function ProjectDashboardPage({ params }: { params: Promise<{ id:
         if (!project || dataLoaded) return;
         const load = async () => {
             try {
-                const [t, tm] = await Promise.all([
-                    getTasks(id),
-                    getTeamMembers(id),
-                ]);
+                const t = await getTasks(id);
                 setTasks(t);
-                setTeamMembers(tm);
 
                 const nodes = t.filter(task => task.taskType === 'node' && task.status === 'approved');
                 setApprovedNodes(nodes);
@@ -68,7 +60,7 @@ export default function ProjectDashboardPage({ params }: { params: Promise<{ id:
             }
         };
         load();
-    }, [project, id, dataLoaded, getTasks, getTeamMembers, getHazopRows]);
+    }, [project, id, dataLoaded, getTasks, getHazopRows]);
 
     if (loading) {
         return <div className="text-center py-12" style={{ color: 'var(--color-slate-500)' }}>Loading...</div>;
@@ -207,7 +199,7 @@ export default function ProjectDashboardPage({ params }: { params: Promise<{ id:
             </div>
 
             {/* Stats */}
-            <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
+            <div className="grid grid-cols-2 md:grid-cols-3 gap-4">
                 <div className="card p-4 text-center">
                     <div className="w-10 h-10 rounded-lg mx-auto mb-2 flex items-center justify-center" style={{ backgroundColor: 'var(--color-primary-100)' }}>
                         <BarChart3 size={20} style={{ color: 'var(--color-primary-600)' }} />
@@ -221,13 +213,6 @@ export default function ProjectDashboardPage({ params }: { params: Promise<{ id:
                     </div>
                     <p className="text-2xl font-bold" style={{ color: 'var(--color-slate-900)' }}>{pendingTasks.length}</p>
                     <p className="text-xs" style={{ color: 'var(--color-slate-500)' }}>Pending Reviews</p>
-                </div>
-                <div className="card p-4 text-center">
-                    <div className="w-10 h-10 rounded-lg mx-auto mb-2 flex items-center justify-center" style={{ backgroundColor: '#f0fdf4' }}>
-                        <Users size={20} style={{ color: '#16a34a' }} />
-                    </div>
-                    <p className="text-2xl font-bold" style={{ color: 'var(--color-slate-900)' }}>{teamMembers.length}</p>
-                    <p className="text-xs" style={{ color: 'var(--color-slate-500)' }}>Team Members</p>
                 </div>
                 <div className="card p-4 text-center">
                     <div className="w-10 h-10 rounded-lg mx-auto mb-2 flex items-center justify-center" style={{ backgroundColor: daysUntilDeadline !== null && daysUntilDeadline < 7 ? '#fef2f2' : 'var(--color-slate-100)' }}>
@@ -254,26 +239,6 @@ export default function ProjectDashboardPage({ params }: { params: Promise<{ id:
                                 <Link href={`/projects/${id}/workspace`} className="btn btn-primary text-xs py-1.5 px-3">
                                     Review <ArrowRight size={12} />
                                 </Link>
-                            </div>
-                        ))}
-                    </div>
-                </div>
-            )}
-
-            {/* Team */}
-            {teamMembers.length > 0 && (
-                <div className="card p-6">
-                    <h2 className="text-lg font-semibold mb-4" style={{ color: 'var(--color-slate-800)' }}>Team</h2>
-                    <div className="flex flex-wrap gap-3">
-                        {teamMembers.map(member => (
-                            <div key={member.id} className="flex items-center gap-2 px-3 py-2 rounded-lg" style={{ backgroundColor: 'var(--color-slate-50)' }}>
-                                <div className="w-8 h-8 rounded-full flex items-center justify-center text-sm font-bold" style={{ backgroundColor: 'var(--color-primary-100)', color: 'var(--color-primary-600)' }}>
-                                    {member.name.charAt(0).toUpperCase()}
-                                </div>
-                                <div>
-                                    <p className="text-sm font-medium" style={{ color: 'var(--color-slate-700)' }}>{member.name}</p>
-                                    <p className="text-xs" style={{ color: 'var(--color-slate-500)' }}>{member.role}</p>
-                                </div>
                             </div>
                         ))}
                     </div>

@@ -3,6 +3,9 @@ import { getDedalusClient } from '@/lib/ai/dedalus-client';
 import { withLangfuseDedalus, langfuse } from '@/lib/ai/langfuse';
 import { requireProjectAccess } from '@/lib/api/access-control';
 import { enforceRateLimit, internalServerErrorResponse } from '@/lib/api/security';
+import { getDb } from '@/lib/db/client';
+import { meetings, tasks } from '@/lib/db/schema';
+import { and, eq } from 'drizzle-orm';
 import { z } from 'zod';
 
 const hazopSchema = z.object({
@@ -11,8 +14,6 @@ const hazopSchema = z.object({
 });
 
 export async function POST(request: NextRequest) {
-    const startTime = Date.now();
-
     try {
         const body = await request.json();
         const parsed = hazopSchema.safeParse(body);
@@ -22,12 +23,12 @@ export async function POST(request: NextRequest) {
         }
 
         const { project_id, node_id } = parsed.data;
-        const access = await requireProjectAccess(request.headers, project_id);
+        const access = await requireProjectAccess(request, project_id);
         if ('error' in access) {
             return access.error;
         }
 
-        const { supabase, userId } = access;
+        const { userId } = access;
         const limit = enforceRateLimit(`ai:hazop-suggestions:${userId}`, {
             windowMs: 60_000,
             maxRequests: 10,
@@ -42,65 +43,44 @@ export async function POST(request: NextRequest) {
         const client = getDedalusClient();
 
         // Fetch the specific node
-        const { data: node, error: nodeError } = await supabase
-            .from('tasks')
-            .select('*')
-            .eq('id', node_id)
-            .eq('project_id', project_id)
-            .single();
+        const db = getDb();
 
-        if (nodeError || !node) {
+        const [node] = await db
+            .select()
+            .from(tasks)
+            .where(and(eq(tasks.id, node_id), eq(tasks.projectId, project_id), eq(tasks.taskType, 'node')))
+            .limit(1);
+
+        if (!node) {
             return NextResponse.json({ error: 'Node not found' }, { status: 404 });
         }
 
         // Fetch all objects for context
-        const { data: objects, error: objError } = await supabase
-            .from('tasks')
-            .select('*')
-            .eq('project_id', project_id)
-            .eq('task_type', 'object');
-
-        if (objError) throw objError;
+        const objects = await db
+            .select()
+            .from(tasks)
+            .where(and(eq(tasks.projectId, project_id), eq(tasks.taskType, 'object')));
 
         // Fetch meetings/transcripts for context
-        const { data: meetings, error: meetingsError } = await supabase
-            .from('meetings')
-            .select('title, summary, transcript, notes')
-            .eq('project_id', project_id);
-
-        if (meetingsError) throw meetingsError;
+        const meetingsRows = await db
+            .select({ title: meetings.title, summary: meetings.summary, transcript: meetings.transcript, notes: meetings.notes })
+            .from(meetings)
+            .where(eq(meetings.projectId, project_id));
 
         const inputContext = {
             node: {
                 title: node.title,
                 description: node.description,
-                design_intent: node.design_intent,
+                design_intent: node.designIntent,
                 boundaries: node.boundaries,
-                equipment_tags: node.equipment_tags,
-                operating_conditions: node.operating_conditions
+                equipment_tags: node.equipmentTags,
+                operating_conditions: node.operatingConditions
             },
             objects_count: objects?.length || 0,
-            objects_summary: objects?.map(o => ({ title: o.title, conditions: o.operating_conditions })).slice(0, 10), // Limit payload size
-            meetings_count: meetings?.length || 0,
-            meetings_text: meetings?.map(m => `Title: ${m.title}\nSummary: ${m.summary}\nNotes: ${m.notes}`).join('\n\n')
+            objects_summary: objects?.map(o => ({ title: o.title, conditions: o.operatingConditions })).slice(0, 10), // Limit payload size
+            meetings_count: meetingsRows?.length || 0,
+            meetings_text: meetingsRows?.map(m => `Title: ${m.title}\nSummary: ${m.summary}\nNotes: ${m.notes}`).join('\n\n')
         };
-
-        const { data: aiRun, error: runError } = await supabase
-            .from('ai_runs')
-            .insert({
-                project_id,
-                triggered_by: userId,
-                run_type: 'hazop_analysis',
-                status: 'running',
-                model: 'openai/gpt-5.2',
-                input_context: inputContext,
-                prompt_messages: null,
-                raw_response: null,
-            })
-            .select()
-            .single();
-
-        if (runError) console.error('Failed to create ai_runs record:', runError);
 
         const prompt = `
         You are an expert Process Safety Engineer conducting a HAZOP study. Your task is to generate HAZOP analysis rows for the specific Node provided below.
@@ -143,12 +123,6 @@ export async function POST(request: NextRequest) {
         }
         `;
 
-        if (aiRun) {
-            await supabase.from('ai_runs').update({
-                prompt_messages: [{ role: 'user', content: prompt }]
-            }).eq('id', aiRun.id);
-        }
-
         const completion = await withLangfuseDedalus({
             traceName: "HAZOP Suggestions",
             userId,
@@ -178,37 +152,10 @@ export async function POST(request: NextRequest) {
             parsedResult = JSON.parse(jsonContent);
         } catch (e) {
             console.error("Failed to parse AI response:", rawContent);
-            if (aiRun) {
-                await supabase.from('ai_runs').update({
-                    status: 'failed',
-                    latency_ms: Date.now() - startTime,
-                    model: 'openai/gpt-5.2',
-                    total_tokens: completion.usage?.total_tokens,
-                    prompt_tokens: completion.usage?.prompt_tokens,
-                    completion_tokens: completion.usage?.completion_tokens,
-                    raw_response: { raw: rawContent, error: "JSON Parse Error" },
-                    error_message: "Failed to parse JSON response",
-                    completed_at: new Date().toISOString(),
-                }).eq('id', aiRun.id);
-            }
             throw new Error("Invalid JSON response from AI");
         }
 
         const suggestions = parsedResult.suggestions || [];
-
-        if (aiRun) {
-            await supabase.from('ai_runs').update({
-                status: 'completed',
-                latency_ms: Date.now() - startTime,
-                model: 'openai/gpt-5.2',
-                total_tokens: completion.usage?.total_tokens,
-                prompt_tokens: completion.usage?.prompt_tokens,
-                completion_tokens: completion.usage?.completion_tokens,
-                raw_response: { raw: rawContent, parsed: parsedResult },
-                output_summary: `Generated ${suggestions.length} HAZOP suggestions`,
-                completed_at: new Date().toISOString(),
-            }).eq('id', aiRun.id);
-        }
 
         return NextResponse.json({
             success: true,

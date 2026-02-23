@@ -1,14 +1,10 @@
 'use client';
 
-import React, { useState, useCallback, createContext, useContext, ReactNode } from 'react';
-import { createClient } from '@/lib/supabase/client';
-import { toCamel, mapRows, toSnake } from '@/lib/supabase/mappers';
-import { buildSafeStoragePath, validateUploadFile } from '@/lib/supabase/upload-security';
+import React, { useState, useCallback, createContext, useContext, ReactNode, useEffect, useRef } from 'react';
+import { validateUploadFile } from '@/lib/supabase/upload-security';
 import { useAuth } from '@/hooks/useAuth';
-import { getPrimaryOrgIdForUser } from '@/lib/supabase/org-membership';
 import type { Meeting } from '@/types';
 
-const supabase = createClient();
 const ALLOWED_MEETING_MIME_TYPES = [
     'audio/mpeg',
     'audio/mp4',
@@ -18,6 +14,19 @@ const ALLOWED_MEETING_MIME_TYPES = [
     'video/webm',
 ];
 const MAX_MEETING_FILE_BYTES = 250 * 1024 * 1024;
+
+async function parseApiError(response: Response, fallback: string): Promise<Error> {
+    try {
+        const payload = await response.json();
+        if (payload?.error && typeof payload.error === 'string') {
+            return new Error(payload.error);
+        }
+    } catch {
+        // ignore
+    }
+
+    return new Error(fallback);
+}
 
 interface MeetingsContextType {
     getAllMeetings: () => Promise<Meeting[]>;
@@ -32,80 +41,98 @@ const MeetingsContext = createContext<MeetingsContextType | null>(null);
 
 export function MeetingsProvider({ children }: { children: ReactNode }) {
     const { user } = useAuth();
-
     const [allMeetings, setAllMeetings] = useState<Meeting[] | null>(null);
+    const lastUserSubRef = useRef<string | null>(null);
+
+    useEffect(() => {
+        const currentSub = user?.sub ?? null;
+        if (lastUserSubRef.current === currentSub) {
+            return;
+        }
+
+        lastUserSubRef.current = currentSub;
+        setAllMeetings(null);
+    }, [user?.sub]);
 
     const getAllMeetings = useCallback(async (): Promise<Meeting[]> => {
         if (!user) return [];
-        if (allMeetings !== null) return allMeetings; // Cache hit
+        if (allMeetings !== null) return allMeetings;
 
-        const orgId = await getPrimaryOrgIdForUser(supabase, user.id);
-        const { data: orgProjects, error: orgProjErr } = await supabase
-            .from('projects')
-            .select('id')
-            .eq('org_id', orgId);
+        const response = await fetch('/api/meetings', { cache: 'no-store' });
+        if (!response.ok) {
+            throw await parseApiError(response, 'Failed to fetch meetings');
+        }
 
-        if (orgProjErr || !orgProjects) return [];
-
-        const projectIds = orgProjects.map(p => p.id);
-        if (projectIds.length === 0) return [];
-
-        const { data, error } = await supabase
-            .from('meetings')
-            .select('*')
-            .in('project_id', projectIds)
-            .order('date', { ascending: true }); // ASC for upcoming
-
-        if (error) throw error;
-        const fetched = mapRows<Meeting>(data || []);
+        const data = await response.json();
+        const fetched = (data.meetings || []) as Meeting[];
         setAllMeetings(fetched);
         return fetched;
-    }, [user, allMeetings]);
+    }, [allMeetings, user]);
 
     const getMeetings = useCallback(async (projectId: string): Promise<Meeting[]> => {
-        // We can just filter the cache if it exists
-        if (allMeetings !== null) return allMeetings.filter((m: Meeting) => m.projectId === projectId);
+        if (allMeetings !== null) {
+            return allMeetings.filter((meeting) => meeting.projectId === projectId);
+        }
 
-        const { data, error } = await supabase.from('meetings').select('*').eq('project_id', projectId).order('date', { ascending: false });
-        if (error) throw error;
-        return mapRows<Meeting>(data || []);
+        const response = await fetch(`/api/meetings?projectId=${encodeURIComponent(projectId)}`, { cache: 'no-store' });
+        if (!response.ok) {
+            throw await parseApiError(response, 'Failed to fetch project meetings');
+        }
+
+        const data = await response.json();
+        return (data.meetings || []) as Meeting[];
     }, [allMeetings]);
 
     const addMeeting = useCallback(async (meeting: Partial<Meeting>): Promise<Meeting> => {
-        const row = toSnake(meeting as Record<string, unknown>);
-        Object.keys(row).forEach(k => row[k] === undefined && delete row[k]);
-        const { data, error } = await supabase.from('meetings').insert(row).select().single();
-        if (error) throw error;
-        const created = toCamel<Meeting>(data);
-        if (allMeetings !== null) {
-            setAllMeetings((prev: Meeting[] | null) => prev ? [...prev, created] : [created]);
+        const response = await fetch('/api/meetings', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(meeting),
+        });
+
+        if (!response.ok) {
+            throw await parseApiError(response, 'Failed to create meeting');
         }
+
+        const data = await response.json();
+        const created = data.meeting as Meeting;
+
+        if (allMeetings !== null) {
+            setAllMeetings((prev) => prev ? [...prev, created] : [created]);
+        }
+
         return created;
     }, [allMeetings]);
 
     const updateMeeting = useCallback(async (meetingId: string, updates: Partial<Meeting>): Promise<Meeting> => {
-        const row = toSnake(updates as Record<string, unknown>);
-        Object.keys(row).forEach(k => row[k] === undefined && delete row[k]);
-        const { data, error } = await supabase.from('meetings').update(row).eq('id', meetingId).select().single();
-        if (error) throw error;
-        const updated = toCamel<Meeting>(data);
-        if (allMeetings !== null) {
-            setAllMeetings((prev: Meeting[] | null) => prev ? prev.map((m: Meeting) => m.id === meetingId ? updated : m) : null);
+        const response = await fetch(`/api/meetings/${meetingId}`, {
+            method: 'PATCH',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(updates),
+        });
+
+        if (!response.ok) {
+            throw await parseApiError(response, 'Failed to update meeting');
         }
+
+        const data = await response.json();
+        const updated = data.meeting as Meeting;
+
+        if (allMeetings !== null) {
+            setAllMeetings((prev) => prev ? prev.map((meeting) => meeting.id === meetingId ? updated : meeting) : null);
+        }
+
         return updated;
     }, [allMeetings]);
 
     const deleteMeeting = useCallback(async (meetingId: string): Promise<void> => {
-        // Fetch the meeting first to get the path
-        const { data: meetingData, error: fetchError } = await supabase.from('meetings').select('recording_path').eq('id', meetingId).single();
-        if (!fetchError && meetingData?.recording_path) {
-            await supabase.storage.from('meeting-recordings').remove([meetingData.recording_path]);
+        const response = await fetch(`/api/meetings/${meetingId}`, { method: 'DELETE' });
+        if (!response.ok) {
+            throw await parseApiError(response, 'Failed to delete meeting');
         }
 
-        const { error } = await supabase.from('meetings').delete().eq('id', meetingId);
-        if (error) throw error;
         if (allMeetings !== null) {
-            setAllMeetings((prev: Meeting[] | null) => prev ? prev.filter((m: Meeting) => m.id !== meetingId) : null);
+            setAllMeetings((prev) => prev ? prev.filter((meeting) => meeting.id !== meetingId) : null);
         }
     }, [allMeetings]);
 
@@ -115,15 +142,32 @@ export function MeetingsProvider({ children }: { children: ReactNode }) {
             maxBytes: MAX_MEETING_FILE_BYTES,
         });
 
-        const storagePath = buildSafeStoragePath(projectId, file.name);
-        const { error: uploadError } = await supabase.storage.from('meeting-recordings').upload(storagePath, file);
-        if (uploadError) throw uploadError;
-        return storagePath;
+        const formData = new FormData();
+        formData.append('projectId', projectId);
+        formData.append('bucketType', 'meeting');
+        formData.append('file', file);
+
+        const response = await fetch('/api/storage/upload', {
+            method: 'POST',
+            body: formData,
+        });
+
+        if (!response.ok) {
+            throw await parseApiError(response, 'Failed to upload meeting recording');
+        }
+
+        const payload = await response.json();
+        return payload.storagePath as string;
     }, []);
 
     return (
         <MeetingsContext.Provider value={{
-            getAllMeetings, getMeetings, addMeeting, updateMeeting, deleteMeeting, uploadMeetingRecording,
+            getAllMeetings,
+            getMeetings,
+            addMeeting,
+            updateMeeting,
+            deleteMeeting,
+            uploadMeetingRecording,
         }}>
             {children}
         </MeetingsContext.Provider>

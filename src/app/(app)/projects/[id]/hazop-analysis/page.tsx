@@ -11,7 +11,6 @@ import {
     ChevronDown,
 } from 'lucide-react';
 import { useProjects } from '@/hooks/useProjects';
-import { createClient } from '@/lib/supabase/client';
 import type { Task, HazopRow } from '@/types';
 
 const GUIDE_WORDS = ['No', 'More', 'Less', 'As Well As', 'Part Of', 'Reverse', 'Other Than', 'Early', 'Late', 'Before', 'After'];
@@ -120,15 +119,10 @@ export default function HazopAnalysisPage({ params }: { params: Promise<{ id: st
         if (!selectedNodeId) return;
         setIsGenerating(true);
         try {
-            const supabase = createClient();
-            const { data: { session } } = await supabase.auth.getSession();
-            const token = session?.access_token;
-
             const res = await fetch('/api/ai/hazop-suggestions', {
                 method: 'POST',
                 headers: {
                     'Content-Type': 'application/json',
-                    ...(token ? { Authorization: `Bearer ${token}` } : {}),
                 },
                 body: JSON.stringify({ project_id: id, node_id: selectedNodeId })
             });

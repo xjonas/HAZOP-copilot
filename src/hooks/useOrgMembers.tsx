@@ -1,7 +1,6 @@
 'use client';
 
 import { useEffect, useState } from 'react';
-import { createClient } from '@/lib/supabase/client';
 
 export interface OrgMemberOption {
     id: string;
@@ -13,18 +12,8 @@ export function useOrgMembers() {
 
     useEffect(() => {
         const fetchMembers = async () => {
-            const supabase = createClient();
-            const { data: { session } } = await supabase.auth.getSession();
-
-            if (!session) {
-                setOrgMembers([]);
-                return;
-            }
-
             try {
-                const res = await fetch('/api/org/members', {
-                    headers: { Authorization: `Bearer ${session.access_token}` },
-                });
+                const res = await fetch('/api/org/members');
 
                 if (!res.ok) {
                     setOrgMembers([]);

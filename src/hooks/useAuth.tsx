@@ -2,11 +2,17 @@
 
 import React, { createContext, useContext, useEffect, useState, useCallback, type ReactNode } from 'react'
 import { useRouter } from 'next/navigation'
-import { createClient } from '@/lib/supabase/client'
-import type { User } from '@supabase/supabase-js'
+import { signOut as amplifySignOut } from 'aws-amplify/auth'
+import { ensureAmplifyConfigured, hasAmplifyCognitoConfig } from '@/lib/auth/amplify-client'
+
+export interface AuthUser {
+    sub: string
+    email: string | null
+    fullName: string | null
+}
 
 interface AuthContextType {
-    user: User | null
+    user: AuthUser | null
     orgName: string | null
     loading: boolean
     signOut: () => Promise<void>
@@ -15,95 +21,90 @@ interface AuthContextType {
 const AuthContext = createContext<AuthContextType | null>(null)
 
 export function AuthProvider({ children }: { children: ReactNode }) {
-    const [user, setUser] = useState<User | null>(null)
+    const [user, setUser] = useState<AuthUser | null>(null)
     const [orgName, setOrgName] = useState<string | null>(null)
     const [loading, setLoading] = useState(true)
     const router = useRouter()
 
-    const fetchOrgName = async (session: any) => {
-        if (!session) {
+    const fetchOrgName = useCallback(async (authenticatedUser: AuthUser | null) => {
+        if (!authenticatedUser) {
             setOrgName(null);
             return;
         }
+
         try {
-            let res = await fetch('/api/org/me', {
-                headers: { 'Authorization': `Bearer ${session.access_token}` },
-            });
+            const res = await fetch('/api/org/me');
 
             if (res.ok) {
                 const data = await res.json();
-
-                // If no org exists, but the user has a company_name in their metadata from signup, auto-assign them.
-                if (!data.org_name && session.user.user_metadata?.company_name) {
-                    const assignRes = await fetch('/api/org/assign', {
-                        method: 'POST',
-                        headers: { 'Authorization': `Bearer ${session.access_token}` },
-                    });
-
-                    if (assignRes.ok) {
-                        // Re-fetch the org name to confirm assignment
-                        res = await fetch('/api/org/me', {
-                            headers: { 'Authorization': `Bearer ${session.access_token}` },
-                        });
-                        if (res.ok) {
-                            const newData = await res.json();
-                            setOrgName(newData.org_name || null);
-                            return;
-                        }
-                    }
-                }
-
                 setOrgName(data.org_name || null);
+                return
             }
+
+            setOrgName(null)
         } catch (err) {
             console.error("Failed to fetch org name", err);
-        }
-    }
-
-    useEffect(() => {
-        const supabase = createClient()
-
-        // Get initial session
-        supabase.auth.getSession().then(({ data: { session } }) => {
-            const newUser = session?.user ?? null;
-            setUser(prev => prev?.id === newUser?.id ? prev : newUser);
-            if (session) {
-                fetchOrgName(session);
-            } else {
-                setLoading(false);
-            }
-        })
-
-        // Listen for auth state changes
-        const {
-            data: { subscription },
-        } = supabase.auth.onAuthStateChange(async (_event, session) => {
-            const newUser = session?.user ?? null;
-            setUser(prev => prev?.id === newUser?.id ? prev : newUser);
-            await fetchOrgName(session);
-            setLoading(false)
-        })
-
-        return () => {
-            subscription.unsubscribe()
+            setOrgName(null)
         }
     }, [])
 
-    const signOut = useCallback(async () => {
-        const supabase = createClient()
-        await supabase.auth.signOut()
-        setUser(null)
-        setOrgName(null)
-        router.push('/login')
-        router.refresh()
-    }, [router])
+    const loadSession = useCallback(async () => {
+        try {
+            const response = await fetch('/api/auth/session', { cache: 'no-store' })
+            if (!response.ok) {
+                setUser(null)
+                setOrgName(null)
+                setLoading(false)
+                return
+            }
 
-    // Wait until orgName fetch resolves before removing loading state initially
-    useEffect(() => {
-        if (user && orgName !== null) {
-            setLoading(false);
+            const data = await response.json()
+            const nextUser = (data?.user ?? null) as AuthUser | null
+            setUser(nextUser)
+            await fetchOrgName(nextUser)
+        } catch (error) {
+            console.error('Failed to load auth session', error)
+            setUser(null)
+            setOrgName(null)
+        } finally {
+            setLoading(false)
         }
-    }, [user, orgName]);
+    }, [fetchOrgName])
+
+    useEffect(() => {
+        const onAuthChanged = () => {
+            setLoading(true)
+            loadSession()
+        }
+
+        loadSession()
+        window.addEventListener('hazop-auth-changed', onAuthChanged)
+
+        return () => {
+            window.removeEventListener('hazop-auth-changed', onAuthChanged)
+        }
+    }, [loadSession])
+
+    const signOut = useCallback(async () => {
+        try {
+            await fetch('/api/auth/logout', { method: 'POST' })
+            if (hasAmplifyCognitoConfig()) {
+                ensureAmplifyConfigured()
+                try {
+                    await amplifySignOut({ global: true })
+                } catch (error) {
+                    console.warn('Amplify signOut skipped:', error)
+                }
+            }
+        } finally {
+            setUser(null)
+            setOrgName(null)
+            window.dispatchEvent(new Event('hazop-auth-changed'))
+            router.push('/login')
+            router.refresh()
+            setLoading(false)
+        }
+    }, [router])
 
     return (
         <AuthContext.Provider value={{ user, orgName, loading, signOut }}>

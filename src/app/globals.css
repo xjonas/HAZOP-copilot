@@ -99,6 +99,14 @@ body {
     border-radius: 3px;
 }
 
+/* ===== Amplify UI Overrides ===== */
+.auth-amplify .amplify-button[data-variation="link"] {
+    display: none !important;
+}
+.auth-amplify .amplify-tabs {
+    display: none !important;
+}
+
 ::-webkit-scrollbar-thumb:hover {
     background-color: var(--color-slate-400);
 }
@@ -164,4 +172,29 @@ body {
     outline: none;
     border-color: var(--color-primary-500);
     box-shadow: 0 0 0 3px var(--color-primary-100);
+}
+
+.auth-amplify {
+    width: 100%;
+}
+
+.auth-amplify .amplify-authenticator {
+    width: 100%;
+}
+
+.auth-amplify .amplify-tabs,
+.auth-amplify .amplify-field-group__outer-end {
+    display: none;
+}
+
+.auth-amplify .amplify-authenticator__container {
+    padding: 0;
+}
+
+.auth-amplify .amplify-button--primary {
+    background-color: var(--color-primary-600);
+}
+
+.auth-amplify .amplify-button--primary:hover {
+    background-color: var(--color-primary-700);
 }

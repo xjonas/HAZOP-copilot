@@ -1,5 +1,7 @@
 import { NextResponse } from 'next/server';
-import { createAdminClient } from '@/lib/supabase/server';
+import { getDb } from '@/lib/db/client';
+import { orgs } from '@/lib/db/schema';
+import { ilike } from 'drizzle-orm';
 import { z } from 'zod';
 
 const orgCheckSchema = z.object({
@@ -17,17 +19,11 @@ export async function POST(request: Request) {
 
         const { companyName } = parsed.data;
 
-        const supabaseAdmin = createAdminClient();
-
-        const { data: existingOrg, error: orgSearchErr } = await supabaseAdmin
-            .from('orgs')
-            .select('id')
-            .ilike('name', companyName)
-            .single();
-
-        if (orgSearchErr && orgSearchErr.code !== 'PGRST116') {
-            return NextResponse.json({ error: orgSearchErr.message }, { status: 400 });
-        }
+        const [existingOrg] = await getDb()
+            .select({ id: orgs.id })
+            .from(orgs)
+            .where(ilike(orgs.name, companyName))
+            .limit(1);
 
         if (existingOrg) {
             return NextResponse.json({ exists: true });

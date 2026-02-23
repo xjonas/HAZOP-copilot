@@ -1,7 +1,6 @@
 export interface Project {
     id: string;
     orgId: string;
-    createdBy: string;
     name: string;
     description?: string;
     status: 'planning' | 'active' | 'in-progress' | 'review' | 'completed';
@@ -63,15 +62,6 @@ export interface HazopRow {
     displayOrder: number;
     createdAt: string;
     updatedAt: string;
-}
-
-export interface TeamMember {
-    id: string;
-    projectId: string;
-    userId?: string;
-    name: string;
-    role: string;
-    createdAt: string;
 }
 
 export interface Meeting {

@@ -3,6 +3,9 @@ import { getDedalusClient } from '@/lib/ai/dedalus-client';
 import { withLangfuseDedalus, langfuse } from '@/lib/ai/langfuse';
 import { requireProjectAccess } from '@/lib/api/access-control';
 import { enforceRateLimit, internalServerErrorResponse } from '@/lib/api/security';
+import { getDb } from '@/lib/db/client';
+import { projects, tasks } from '@/lib/db/schema';
+import { and, asc, eq } from 'drizzle-orm';
 import { z } from 'zod';
 
 const detectSchema = z.object({
@@ -10,8 +13,6 @@ const detectSchema = z.object({
 });
 
 export async function POST(request: NextRequest) {
-    const startTime = Date.now();
-
     try {
         const body = await request.json();
         const parsed = detectSchema.safeParse(body);
@@ -21,12 +22,12 @@ export async function POST(request: NextRequest) {
         }
 
         const { project_id } = parsed.data;
-        const access = await requireProjectAccess(request.headers, project_id);
+        const access = await requireProjectAccess(request, project_id);
         if ('error' in access) {
             return access.error;
         }
 
-        const { supabase, userId } = access;
+        const { userId } = access;
         const limit = enforceRateLimit(`ai:detect-nodes:${userId}`, {
             windowMs: 60_000,
             maxRequests: 10,
@@ -40,14 +41,14 @@ export async function POST(request: NextRequest) {
 
         const client = getDedalusClient();
 
-        const { data: objects, error: objError } = await supabase
-            .from('tasks')
-            .select('*')
-            .eq('project_id', project_id)
-            .eq('task_type', 'object')
-            .order('display_order');
+        const db = getDb();
 
-        if (objError) throw objError;
+        const objects = await db
+            .select()
+            .from(tasks)
+            .where(and(eq(tasks.projectId, project_id), eq(tasks.taskType, 'object')))
+            .orderBy(asc(tasks.displayOrder));
+
         if (!objects || objects.length === 0) {
             return NextResponse.json({ error: 'No objects found. Run Object Detection first.' }, { status: 400 });
         }
@@ -61,26 +62,9 @@ export async function POST(request: NextRequest) {
                 position: o.position,
                 connections: o.connections,
                 chemicals: o.chemicals,
-                operating_conditions: o.operating_conditions
+                operating_conditions: o.operatingConditions
             }))
         };
-
-        const { data: aiRun, error: runError } = await supabase
-            .from('ai_runs')
-            .insert({
-                project_id,
-                triggered_by: userId,
-                run_type: 'node_detection',
-                status: 'running',
-                model: 'openai/gpt-5.2',
-                input_context: inputContext,
-                prompt_messages: null,
-                raw_response: null,
-            })
-            .select()
-            .single();
-
-        if (runError) console.error('Failed to create ai_runs record:', runError);
 
         const prompt = `
         You are an expert Process Safety Engineer conducting a HAZOP study. Your task is to define the "Nodes" for the study based on the detected equipment/objects provided below.
@@ -124,13 +108,6 @@ export async function POST(request: NextRequest) {
         }
         `;
 
-        if (aiRun) {
-            // Log the prompt immediately
-            await supabase.from('ai_runs').update({
-                prompt_messages: [{ role: 'user', content: prompt }]
-            }).eq('id', aiRun.id);
-        }
-
         const completion = await withLangfuseDedalus({
             traceName: "Node Detection",
             userId,
@@ -161,74 +138,41 @@ export async function POST(request: NextRequest) {
             parsedResult = JSON.parse(jsonContent);
         } catch (e) {
             console.error("Failed to parse AI response:", rawContent);
-            // Log failure
-            if (aiRun) {
-                await supabase.from('ai_runs').update({
-                    status: 'failed',
-                    latency_ms: Date.now() - startTime,
-                    model: 'openai/gpt-5.2',
-                    total_tokens: completion.usage?.total_tokens,
-                    prompt_tokens: completion.usage?.prompt_tokens,
-                    completion_tokens: completion.usage?.completion_tokens,
-                    raw_response: { raw: rawContent, error: "JSON Parse Error" },
-                    error_message: "Failed to parse JSON response",
-                    completed_at: new Date().toISOString(),
-                }).eq('id', aiRun.id);
-            }
             throw new Error("Invalid JSON response from AI");
         }
 
         const nodes = parsedResult.nodes || [];
 
-        await supabase
-            .from('tasks')
-            .delete()
-            .eq('project_id', project_id)
-            .eq('task_type', 'node');
+        await db
+            .delete(tasks)
+            .where(and(eq(tasks.projectId, project_id), eq(tasks.taskType, 'node')));
 
         const nodeRows = nodes.map((node: any, index: number) => ({
-            project_id,
-            task_type: 'node',
+            projectId: project_id,
+            taskType: 'node' as const,
             title: node.title,
             description: node.description + (node.included_object_ids?.length ? `\n\nIncludes: ${node.included_object_ids.length} objects` : ''),
-            design_intent: node.design_intent,
+            designIntent: node.design_intent,
             boundaries: node.boundaries,
-            equipment_tags: node.equipment_tags,
-            operating_conditions: node.operating_conditions,
+            equipmentTags: node.equipment_tags,
+            operatingConditions: node.operating_conditions,
             chemicals: node.chemicals,
-            objects: node.objects,
             status: 'pending',
-            display_order: index + 1,
+            displayOrder: index + 1,
         }));
 
-        const { data: createdNodes, error: nodeInsertError } = await supabase
-            .from('tasks')
-            .insert(nodeRows)
-            .select();
+        const createdNodes = await db
+            .insert(tasks)
+            .values(nodeRows)
+            .returning();
 
-        if (nodeInsertError) throw nodeInsertError;
-
-        if (aiRun) {
-            await supabase.from('ai_runs').update({
-                status: 'completed',
-                latency_ms: Date.now() - startTime,
-                model: 'openai/gpt-5.2',
-                total_tokens: completion.usage?.total_tokens,
-                prompt_tokens: completion.usage?.prompt_tokens,
-                completion_tokens: completion.usage?.completion_tokens,
-                raw_response: { raw: rawContent, parsed: parsedResult },
-                output_summary: `Defined ${createdNodes?.length} nodes`,
-                completed_at: new Date().toISOString(),
-            }).eq('id', aiRun.id);
-        }
-
-        await supabase
-            .from('projects')
-            .update({
-                workflow_stage: 'nodeReview',
+        await db
+            .update(projects)
+            .set({
+                workflowStage: 'nodeReview',
                 progress: 60,
             })
-            .eq('id', project_id);
+            .where(eq(projects.id, project_id));
 
         return NextResponse.json({
             success: true,

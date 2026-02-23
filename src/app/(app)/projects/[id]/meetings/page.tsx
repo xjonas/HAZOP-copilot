@@ -22,9 +22,8 @@ import {
 } from 'lucide-react';
 import { useProjects } from '@/hooks/useProjects';
 import { useMeetings } from '@/hooks/useMeetings';
-import { useTeam } from '@/hooks/useTeam';
-import { createClient } from '@/lib/supabase/client';
-import type { Meeting, TeamMember } from '@/types';
+import { useOrgMembers } from '@/hooks/useOrgMembers';
+import type { Meeting } from '@/types';
 
 type Tab = 'overview' | 'transcript' | 'summary';
 
@@ -34,11 +33,10 @@ export default function MeetingsPage({ params }: { params: Promise<{ id: string 
     const targetMeetingId = searchParams?.get('meetingId');
     const { getProject, getSignedUrl, loading } = useProjects();
     const { getMeetings, addMeeting, updateMeeting, deleteMeeting, uploadMeetingRecording } = useMeetings();
-    const { getTeamMembers } = useTeam();
+    const { orgMembers } = useOrgMembers();
     const project = getProject(id);
 
     const [meetings, setMeetings] = useState<Meeting[]>([]);
-    const [teamMembers, setTeamMembers] = useState<TeamMember[]>([]);
     const [selectedMeeting, setSelectedMeeting] = useState<Meeting | null>(null);
     const [dataLoaded, setDataLoaded] = useState(false);
 
@@ -73,12 +71,8 @@ export default function MeetingsPage({ params }: { params: Promise<{ id: string 
         if (!project || dataLoaded) return;
         const load = async () => {
             try {
-                const [m, tm] = await Promise.all([
-                    getMeetings(id),
-                    getTeamMembers(id),
-                ]);
+                const m = await getMeetings(id);
                 setMeetings(m);
-                setTeamMembers(tm);
                 setDataLoaded(true);
 
                 if (targetMeetingId) {
@@ -94,7 +88,7 @@ export default function MeetingsPage({ params }: { params: Promise<{ id: string 
             }
         };
         load();
-    }, [project, id, dataLoaded, getMeetings, getTeamMembers, targetMeetingId]);
+    }, [project, id, dataLoaded, getMeetings, targetMeetingId]);
 
     // Fetch audio URL when a meeting is selected
     useEffect(() => {
@@ -156,19 +150,12 @@ export default function MeetingsPage({ params }: { params: Promise<{ id: string 
         if (!selectedFile) return;
         setIsTranscribing(true);
         try {
-            const supabase = createClient();
-            const { data: { session } } = await supabase.auth.getSession();
-            const token = session?.access_token;
-
             const formData = new FormData();
             formData.append('file', selectedFile);
             formData.append('projectId', id);
 
             const res = await fetch('/api/meetings/transcribe', {
                 method: 'POST',
-                headers: {
-                    ...(token ? { Authorization: `Bearer ${token}` } : {}),
-                },
                 body: formData,
             });
 
@@ -195,15 +182,10 @@ export default function MeetingsPage({ params }: { params: Promise<{ id: string 
         }
         setIsSummarizing(true);
         try {
-            const supabase = createClient();
-            const { data: { session } } = await supabase.auth.getSession();
-            const token = session?.access_token;
-
             const res = await fetch('/api/meetings/summary', {
                 method: 'POST',
                 headers: {
                     'Content-Type': 'application/json',
-                    ...(token ? { Authorization: `Bearer ${token}` } : {}),
                 },
                 body: JSON.stringify({ transcript, notes: meetingNotes, projectId: id }),
             });
@@ -473,16 +455,16 @@ export default function MeetingsPage({ params }: { params: Promise<{ id: string 
                                         <div>
                                             <label className="block text-xs font-medium text-slate-500 mb-2">Attendees</label>
                                             <div className="flex flex-wrap gap-2">
-                                                {teamMembers.map(m => (
+                                                {orgMembers.map(m => (
                                                     <button
                                                         key={m.id}
-                                                        onClick={() => toggleAttendee(m.name)}
-                                                        className={`text-xs px-3 py-1.5 rounded-full border transition-colors ${meetingAttendees.includes(m.name)
+                                                        onClick={() => toggleAttendee(m.full_name)}
+                                                        className={`text-xs px-3 py-1.5 rounded-full border transition-colors ${meetingAttendees.includes(m.full_name)
                                                             ? 'bg-primary-50 border-primary-200 text-primary-700'
                                                             : 'border-slate-200 text-slate-600 hover:border-slate-300'
                                                             }`}
                                                     >
-                                                        {m.name}
+                                                        {m.full_name}
                                                     </button>
                                                 ))}
                                             </div>

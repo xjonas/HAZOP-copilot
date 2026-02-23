@@ -21,7 +21,6 @@ import {
     AlertCircle,
 } from 'lucide-react';
 import { useProjects } from '@/hooks/useProjects';
-import { createClient } from '@/lib/supabase/client';
 import type { Task, PdfFile } from '@/types';
 import dynamic from 'next/dynamic';
 import TaskCard from '@/components/TaskCard';
@@ -411,16 +410,10 @@ export default function WorkspacePage({ params }: { params: Promise<{ id: string
         setWorkflowStage('objectDetection');
 
         try {
-            // Get auth token for the API route
-            const supabase = createClient();
-            const { data: { session } } = await supabase.auth.getSession();
-            const token = session?.access_token;
-
             const response = await fetch('/api/ai/detect-objects', {
                 method: 'POST',
                 headers: {
                     'Content-Type': 'application/json',
-                    ...(token ? { 'Authorization': `Bearer ${token}` } : {}),
                 },
                 body: JSON.stringify({ project_id: id }),
             });
@@ -432,7 +425,7 @@ export default function WorkspacePage({ params }: { params: Promise<{ id: string
             }
 
             // Refetch tasks from Supabase to get the newly created object tasks
-            const allTasks = await getTasks(id);
+            const allTasks = await getTasks(id, undefined, true);
             setObjectTasks(allTasks.filter(t => t.taskType === 'object'));
 
             // Advance to object review
@@ -457,15 +450,10 @@ export default function WorkspacePage({ params }: { params: Promise<{ id: string
         setWorkflowStage('nodeDetection');
 
         try {
-            const supabase = createClient();
-            const { data: { session } } = await supabase.auth.getSession();
-            const token = session?.access_token;
-
             const response = await fetch('/api/ai/detect-nodes', {
                 method: 'POST',
                 headers: {
                     'Content-Type': 'application/json',
-                    ...(token ? { 'Authorization': `Bearer ${token}` } : {}),
                 },
                 body: JSON.stringify({ project_id: id }),
             });
@@ -477,7 +465,7 @@ export default function WorkspacePage({ params }: { params: Promise<{ id: string
             }
 
             // Refetch tasks
-            const allTasks = await getTasks(id);
+            const allTasks = await getTasks(id, undefined, true);
             setNodeTasks(allTasks.filter(t => t.taskType === 'node'));
 
             setWorkflowStageState('nodeReview');
@@ -875,10 +863,20 @@ export default function WorkspacePage({ params }: { params: Promise<{ id: string
                                                     />
                                                 ))
                                             ) : (
-                                                <div className="text-center py-6">
-                                                    <Check size={24} className="mx-auto mb-2 text-green-500" />
-                                                    <p className="text-sm" style={{ color: 'var(--color-slate-500)' }}>All objects reviewed!</p>
-                                                </div>
+                                                objectTasks.length === 0 ? (
+                                                    <div className="text-center py-6">
+                                                        <AlertCircle size={24} className="mx-auto mb-2" style={{ color: 'var(--color-slate-400)' }} />
+                                                        <p className="text-sm mb-3" style={{ color: 'var(--color-slate-500)' }}>No objects detected yet.</p>
+                                                        <button onClick={runObjectDetection} className="btn btn-secondary text-xs">
+                                                            <RotateCcw size={14} /> Run Object Detection
+                                                        </button>
+                                                    </div>
+                                                ) : (
+                                                    <div className="text-center py-6">
+                                                        <Check size={24} className="mx-auto mb-2 text-green-500" />
+                                                        <p className="text-sm" style={{ color: 'var(--color-slate-500)' }}>All objects reviewed!</p>
+                                                    </div>
+                                                )
                                             )
                                         ) : (
                                             approvedObjects.length > 0 ? (

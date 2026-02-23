@@ -1,8 +1,8 @@
 'use client';
 
-import React, { useMemo, useState } from 'react';
+import React, { useMemo, useState, useEffect } from 'react';
 import Link from 'next/link';
-import { usePathname } from 'next/navigation';
+import { usePathname, useRouter } from 'next/navigation';
 import {
     LayoutDashboard,
     FolderKanban,
@@ -10,7 +10,6 @@ import {
     ChevronRight,
     Play,
     ClipboardList,
-    Users,
     User,
     LogOut,
     Calendar,
@@ -28,16 +27,22 @@ const projectNavItems = [
     { path: 'dashboard', icon: LayoutDashboard, label: 'Overview' },
     { path: 'workspace', icon: Play, label: 'HAZOP Onboarding' },
     { path: 'hazop-analysis', icon: ClipboardList, label: 'HAZOP Analysis' },
-    { path: 'team', icon: Users, label: 'Team' },
     { path: 'meetings', icon: Calendar, label: 'Meetings' },
     { path: 'settings', icon: Settings, label: 'Settings' },
 ];
 
 export default function AppShell({ children }: { children: React.ReactNode }) {
     const pathname = usePathname() ?? '';
+    const router = useRouter();
     const { projects } = useProjects();
-    const { user, orgName, signOut } = useAuth();
+    const { user, orgName, signOut, loading } = useAuth();
     const [isSidebarOpen, setIsSidebarOpen] = useState(true);
+
+    useEffect(() => {
+        if (!loading && !user) {
+            router.push('/welcome');
+        }
+    }, [user, loading, router]);
 
     // Determine if we're in a project context
     const projectMatch = pathname.match(/^\/projects\/([^/]+)/);
@@ -62,7 +67,13 @@ export default function AppShell({ children }: { children: React.ReactNode }) {
         return 'HAZOP Copilot';
     }, [pathname, isProjectRoute, currentProject]);
 
-
+    if (loading || !user) {
+        return (
+            <div className="flex h-screen items-center justify-center" style={{ backgroundColor: 'var(--bg-app)' }}>
+                <div className="w-8 h-8 border-4 border-primary-500 border-t-transparent rounded-full animate-spin" />
+            </div>
+        );
+    }
 
     return (
         <div className="flex h-screen overflow-hidden">
@@ -189,7 +200,7 @@ export default function AppShell({ children }: { children: React.ReactNode }) {
                     <div className="flex items-center gap-3">
                         {user && (
                             <span className="text-sm" style={{ color: 'var(--color-slate-500)' }}>
-                                {orgName ? `${orgName} - ` : ''}{user.user_metadata?.full_name || user.email}
+                                {orgName ? `${orgName} - ` : ''}{user.fullName || user.email || user.sub}
                             </span>
                         )}
                         <div className="w-9 h-9 rounded-full flex items-center justify-center" style={{ backgroundColor: 'var(--color-primary-100)' }}>
