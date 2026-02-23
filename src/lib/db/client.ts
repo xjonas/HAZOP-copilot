@@ -38,15 +38,15 @@ export function getDb() {
   const client = globalForDb.dbClient ?? postgres(databaseUrl, {
     max: 10,
     prepare: false,
+    idle_timeout: 20,
+    max_lifetime: 60 * 30,
   });
 
   const db = drizzle(client, { schema });
 
-  if (process.env.NODE_ENV !== 'production') {
-    globalForDb.dbClient = client;
-    globalForDb.drizzleDb = db;
-    globalForDb.databaseUrl = databaseUrl;
-  }
+  globalForDb.dbClient = client;
+  globalForDb.drizzleDb = db;
+  globalForDb.databaseUrl = databaseUrl;
 
   return db;
 }
