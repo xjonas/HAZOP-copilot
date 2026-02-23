@@ -1,7 +1,7 @@
 'use client';
 
 import React, { useState, useCallback, createContext, useContext, ReactNode, useEffect, useRef } from 'react';
-import { validateUploadFile } from '@/lib/supabase/upload-security';
+import { validateUploadFile } from '@/lib/storage/upload-security';
 import { useAuth } from '@/hooks/useAuth';
 import type { Meeting } from '@/types';
 

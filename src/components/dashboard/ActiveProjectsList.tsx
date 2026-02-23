@@ -66,20 +66,6 @@ export function ActiveProjectsList({ projects }: ActiveProjectsListProps) {
                                 </div>
                             </div>
                             <div className="flex items-center gap-4">
-                                {project.progress !== undefined && project.progress > 0 && (
-                                    <div className="flex items-center gap-2">
-                                        <div className="w-24 h-2 rounded-full" style={{ backgroundColor: 'var(--color-slate-200)' }}>
-                                            <div
-                                                className="h-full rounded-full"
-                                                style={{
-                                                    width: `${project.progress}%`,
-                                                    backgroundColor: 'var(--color-primary-500)',
-                                                }}
-                                            />
-                                        </div>
-                                        <span className="text-xs font-medium" style={{ color: 'var(--color-slate-500)' }}>{project.progress}%</span>
-                                    </div>
-                                )}
                                 <ArrowRight size={18} className="group-hover:translate-x-1 transition-transform" style={{ color: 'var(--color-slate-400)' }} />
                             </div>
                         </Link>

@@ -1,7 +1,7 @@
 'use client';
 
 import React, { useState, useEffect, useContext, createContext, useCallback, ReactNode, useRef } from 'react';
-import { validateUploadFile } from '@/lib/supabase/upload-security';
+import { validateUploadFile } from '@/lib/storage/upload-security';
 import { useAuth } from '@/hooks/useAuth';
 import type { Project, ProjectFile, Task, HazopRow } from '@/types';
 

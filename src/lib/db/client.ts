@@ -8,50 +8,13 @@ const globalForDb = globalThis as unknown as {
   databaseUrl: string | undefined;
 };
 
-function getProjectRefFromSupabaseUrl(): string | null {
-  const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL;
-  if (!supabaseUrl) {
-    return null;
-  }
-
-  try {
-    const parsed = new URL(supabaseUrl);
-    const hostPart = parsed.hostname.split('.')[0];
-    return hostPart || null;
-  } catch {
-    return null;
-  }
-}
-
-function normalizePoolerUrl(rawUrl: string): string {
-  try {
-    const parsed = new URL(rawUrl);
-    const isSupabasePooler = parsed.hostname.includes('pooler.supabase.com');
-    const isPlainPostgresUser = parsed.username === 'postgres';
-
-    if (!isSupabasePooler || !isPlainPostgresUser) {
-      return rawUrl;
-    }
-
-    const projectRef = getProjectRefFromSupabaseUrl();
-    if (!projectRef) {
-      return rawUrl;
-    }
-
-    parsed.username = `postgres.${projectRef}`;
-    return parsed.toString();
-  } catch {
-    return rawUrl;
-  }
-}
-
 function resolveRuntimeDatabaseUrl(): string {
   const runtimeUrl = process.env.DATABASE_URL || process.env.DATABASE_POOL_URL;
   if (!runtimeUrl) {
     throw new Error('DATABASE_URL or DATABASE_POOL_URL is required.');
   }
 
-  return normalizePoolerUrl(runtimeUrl);
+  return runtimeUrl;
 }
 
 export function getDb() {

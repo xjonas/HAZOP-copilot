@@ -106,7 +106,7 @@ export default function NewProjectPage() {
                 processDescription: formData.processDescription,
             });
 
-            // Upload files to Supabase Storage
+            // Upload files to storage backend
             for (const file of formData.pidFiles) {
                 await uploadFile(created.id, file);
             }

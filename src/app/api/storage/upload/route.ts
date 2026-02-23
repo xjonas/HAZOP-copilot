@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { csrfOriginValid, internalServerErrorResponse } from '@/lib/api/security'
 import { requireProjectAccess } from '@/lib/api/access-control'
-import { buildSafeStoragePath, validateUploadFile } from '@/lib/supabase/upload-security'
+import { buildSafeStoragePath, validateUploadFile } from '@/lib/storage/upload-security'
 import { uploadObject, type StorageBucketType } from '@/lib/storage/s3'
 
 const ALLOWED_BY_BUCKET: Record<StorageBucketType, string[]> = {

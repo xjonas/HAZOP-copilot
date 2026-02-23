@@ -315,7 +315,7 @@ export default function WorkspacePage({ params }: { params: Promise<{ id: string
     const [isDetecting, setIsDetecting] = useState(false);
     const [detectionError, setDetectionError] = useState<string | null>(null);
 
-    // Load project data from Supabase
+    // Load project data
     useEffect(() => {
         if (!project || dataLoaded) return;
         const loadData = async () => {
@@ -424,7 +424,7 @@ export default function WorkspacePage({ params }: { params: Promise<{ id: string
                 throw new Error(data.error || `Detection failed (${response.status})`);
             }
 
-            // Refetch tasks from Supabase to get the newly created object tasks
+            // Refetch tasks to get the newly created object tasks
             const allTasks = await getTasks(id, undefined, true);
             setObjectTasks(allTasks.filter(t => t.taskType === 'object'));
 
